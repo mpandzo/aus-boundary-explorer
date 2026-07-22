@@ -37,6 +37,7 @@
     <div class="field">
       <label for="type-select">Boundary type</label>
       <select id="type-select">
+        <option value="">— Choose one —</option>
         <option value="LGA">LGA</option>
         <option value="SA2">SA2</option>
         <option value="SA3">SA3</option>
@@ -46,13 +47,13 @@
     </div>
 
     <div class="field">
-      <label id="area-label" for="area-select">Select a Local Government Area</label>
+      <label id="area-label" for="area-select">Select an area</label>
       <select id="area-select" disabled>
-        <option>Loading…</option>
+        <option>— choose a boundary type first —</option>
       </select>
     </div>
 
-    <div id="status">Loading…</div>
+    <div id="status">Select a boundary type to begin.</div>
   </div>
 
   <script>
@@ -103,7 +104,11 @@
       },
     };
 
-    const AUS_BOUNDS = [[112, -44], [154, -10]];
+    const AUS_BOUNDS = [[112, -44], [154, -10]];   // initial view (mainland + Tas)
+    // Hard pan limit — padded wide enough to include Australia's offshore
+    // territories (Cocos ~96°E, Norfolk ~168°E) so no area is unreachable,
+    // while still blocking the map from wandering off to other continents.
+    const AUS_MAX_BOUNDS = [[93, -46], [172, -8]];
 
     // Build a pmtiles:// URL for a path relative to this page.
     const baseDir = location.origin + location.pathname.replace(/[^/]*$/, "");
@@ -117,7 +122,9 @@
       container: "map",
       style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
       bounds: AUS_BOUNDS,
-      fitBoundsOptions: { padding: 20 }
+      fitBoundsOptions: { padding: 20 },
+      maxBounds: AUS_MAX_BOUNDS,   // can't pan/zoom outside Australia
+      minZoom: 2.5
     });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
 
@@ -149,7 +156,16 @@
       areaSelect.innerHTML = "";
       map.fitBounds(AUS_BOUNDS, { padding: 20 });
 
-      // Not-yet-available types (SA2/SA3/SA4 for now).
+      // No boundary type chosen yet (initial "— Choose one —" state).
+      if (!type) {
+        areaLabel.textContent = "Select an area";
+        areaSelect.disabled = true;
+        areaSelect.innerHTML = "<option>— choose a boundary type first —</option>";
+        statusEl.textContent = "Select a boundary type to begin.";
+        return;
+      }
+
+      // Defined but not-yet-available types (guard; all five are live now).
       if (!cfg) {
         areaLabel.textContent = "Select an area";
         areaSelect.disabled = true;
