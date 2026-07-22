@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Australian Boundary Explorer — MapLibre + PMTiles</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- MapLibre GL JS (no API key required) -->
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <!-- PMTiles protocol for MapLibre -->
+  <script src="https://unpkg.com/pmtiles@3/dist/pmtiles.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #map { position: absolute; inset: 0; }
+
+    .panel {
+      position: absolute; top: 12px; left: 12px; z-index: 1;
+      background: #fff; padding: 12px 14px; border-radius: 8px;
+      box-shadow: 0 1px 6px rgba(0,0,0,.3); max-width: 280px;
+    }
+    .panel h1 { font-size: 15px; margin: 0 0 8px; }
+    .field { margin-bottom: 10px; }
+    .field:last-child { margin-bottom: 0; }
+    .panel label { font-size: 12px; color: #444; display: block; margin-bottom: 4px; }
+    .panel select { width: 100%; padding: 6px; font-size: 13px; }
+    #status { font-size: 12px; color: #666; margin-top: 4px; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h1>Australian Boundary Explorer</h1>
+
+    <div class="field">
+      <label for="type-select">Boundary type</label>
+      <select id="type-select">
+        <option value="LGA">LGA</option>
+        <option value="SA2">SA2</option>
+        <option value="SA3">SA3</option>
+        <option value="SA4">SA4</option>
+        <option value="STATE">State</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label id="area-label" for="area-select">Select a Local Government Area</label>
+      <select id="area-select" disabled>
+        <option>Loading…</option>
+      </select>
+    </div>
+
+    <div id="status">Loading…</div>
+  </div>
+
+  <script>
+    // ---- Boundary-type registry ------------------------------------------
+    // Each entry fully describes one boundary type. Adding SA2/SA3/SA4 later
+    // is just filling in these fields once the .pmtiles + index files exist.
+    // A `null` entry renders in the dropdown but shows "coming soon".
+    const BOUNDARIES = {
+      LGA: {
+        singular: "Local Government Area",
+        plural: "LGAs",
+        pmtiles: "tiles/lga_2025.pmtiles",
+        sourceLayer: "lgas",
+        index: "tiles/lga_2025_index.json",
+        codeField: "LGA_CODE25",
+      },
+      SA2: {
+        singular: "Statistical Area Level 2 (SA2)",
+        plural: "SA2s",
+        pmtiles: "tiles/sa2_2021.pmtiles",
+        sourceLayer: "sa2",
+        index: "tiles/sa2_2021_index.json",
+        codeField: "SA2_CODE21",
+      },
+      SA3: {
+        singular: "Statistical Area Level 3 (SA3)",
+        plural: "SA3s",
+        pmtiles: "tiles/sa3_2021.pmtiles",
+        sourceLayer: "sa3",
+        index: "tiles/sa3_2021_index.json",
+        codeField: "SA3_CODE21",
+      },
+      SA4: {
+        singular: "Statistical Area Level 4 (SA4)",
+        plural: "SA4s",
+        pmtiles: "tiles/sa4_2021.pmtiles",
+        sourceLayer: "sa4",
+        index: "tiles/sa4_2021_index.json",
+        codeField: "SA4_CODE21",
+      },
+      STATE: {
+        singular: "State / Territory",
+        plural: "states & territories",
+        pmtiles: "tiles/state_2025.pmtiles",
+        sourceLayer: "states",
+        index: "tiles/state_2025_index.json",
+        codeField: "STE_CODE21",
+      },
+    };
+
+    const AUS_BOUNDS = [[112, -44], [154, -10]];
+
+    // Build a pmtiles:// URL for a path relative to this page.
+    const baseDir = location.origin + location.pathname.replace(/[^/]*$/, "");
+    const pmtilesUrl = (path) => "pmtiles://" + baseDir + path;
+
+    // Register the pmtiles:// protocol with MapLibre.
+    maplibregl.addProtocol("pmtiles", new pmtiles.Protocol().tile);
+
+    // ---- Map --------------------------------------------------------------
+    const map = new maplibregl.Map({
+      container: "map",
+      style: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+      bounds: AUS_BOUNDS,
+      fitBoundsOptions: { padding: 20 }
+    });
+    map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+    const typeSelect = document.getElementById("type-select");
+    const areaSelect = document.getElementById("area-select");
+    const areaLabel = document.getElementById("area-label");
+    const statusEl = document.getElementById("status");
+
+    // Fixed layer/source ids reused across boundary types.
+    const SRC = "boundary";
+    const L_FILL = "boundary-fill", L_LINE = "boundary-line";
+    const L_HL_FILL = "boundary-highlight-fill", L_HL_LINE = "boundary-highlight-line";
+
+    let byCode = {};   // code -> {code,name,[state],bbox} for the active type
+
+    // Remove the active boundary source + layers, if present.
+    function clearBoundary() {
+      for (const id of [L_HL_LINE, L_HL_FILL, L_LINE, L_FILL]) {
+        if (map.getLayer(id)) map.removeLayer(id);
+      }
+      if (map.getSource(SRC)) map.removeSource(SRC);
+    }
+
+    // Switch to a boundary type: swap tiles/layers and repopulate the picker.
+    async function setBoundary(type) {
+      const cfg = BOUNDARIES[type];
+      clearBoundary();
+      byCode = {};
+      areaSelect.innerHTML = "";
+      map.fitBounds(AUS_BOUNDS, { padding: 20 });
+
+      // Not-yet-available types (SA2/SA3/SA4 for now).
+      if (!cfg) {
+        areaLabel.textContent = "Select an area";
+        areaSelect.disabled = true;
+        areaSelect.innerHTML = "<option>— not available yet —</option>";
+        statusEl.textContent = type + " boundaries coming soon.";
+        return;
+      }
+
+      areaLabel.textContent = "Select a " + cfg.singular;
+      const code = cfg.codeField;
+
+      // ---- Vector source & layers ----------------------------------------
+      map.addSource(SRC, { type: "vector", url: pmtilesUrl(cfg.pmtiles) });
+      map.addLayer({
+        id: L_FILL, type: "fill", source: SRC, "source-layer": cfg.sourceLayer,
+        paint: { "fill-color": "#2b6cb0", "fill-opacity": 0.05 }
+      });
+      map.addLayer({
+        id: L_LINE, type: "line", source: SRC, "source-layer": cfg.sourceLayer,
+        paint: { "line-color": "#2b6cb0", "line-width": 0.4, "line-opacity": 0.5 }
+      });
+      map.addLayer({
+        id: L_HL_FILL, type: "fill", source: SRC, "source-layer": cfg.sourceLayer,
+        filter: ["==", ["get", code], ""],
+        paint: { "fill-color": "#e53e3e", "fill-opacity": 0.2 }
+      });
+      map.addLayer({
+        id: L_HL_LINE, type: "line", source: SRC, "source-layer": cfg.sourceLayer,
+        filter: ["==", ["get", code], ""],
+        paint: { "line-color": "#e53e3e", "line-width": 2.5 }
+      });
+
+      // ---- Picker (from the tiny index, not the tiles) -------------------
+      let index;
+      try {
+        const res = await fetch(cfg.index);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        index = await res.json();   // already sorted A→Z
+      } catch (err) {
+        statusEl.textContent = "Failed to load " + type + " index: " + err.message;
+        return;
+      }
+
+      areaSelect.innerHTML = '<option value="">— Choose one —</option>';
+      for (const o of index) {
+        byCode[o.code] = o;
+        const opt = document.createElement("option");
+        opt.value = o.code;
+        opt.textContent = o.state ? o.name + " (" + o.state + ")" : o.name;
+        areaSelect.appendChild(opt);
+      }
+      areaSelect.disabled = false;
+      statusEl.textContent = index.length + " " + cfg.plural + " loaded.";
+    }
+
+    // ---- Interaction ------------------------------------------------------
+    typeSelect.addEventListener("change", () => setBoundary(typeSelect.value));
+
+    areaSelect.addEventListener("change", () => {
+      const cfg = BOUNDARIES[typeSelect.value];
+      if (!cfg) return;
+      const code = areaSelect.value;
+      map.setFilter(L_HL_FILL, ["==", ["get", cfg.codeField], code]);
+      map.setFilter(L_HL_LINE, ["==", ["get", cfg.codeField], code]);
+
+      if (!code) {
+        map.fitBounds(AUS_BOUNDS, { padding: 20 });
+        statusEl.textContent = Object.keys(byCode).length + " " + cfg.plural + " loaded.";
+        return;
+      }
+
+      const o = byCode[code];
+      const [w, s, e, n] = o.bbox;   // [minLng,minLat,maxLng,maxLat]
+      map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 12, duration: 800 });
+      statusEl.textContent = "Showing: " + o.name + (o.state ? ", " + o.state : "");
+    });
+
+    map.on("load", () => setBoundary(typeSelect.value)); // default: LGA
+  </script>
+</body>
+</html>

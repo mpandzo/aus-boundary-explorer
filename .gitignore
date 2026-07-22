@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+
+# Raw ABS source shapefiles are large (~200 MB) and reproducible inputs,
+# not build outputs. Keep them locally; don't commit. Remove this line if
+# you'd rather version the source alongside the tiles.
+data/
