@@ -38,6 +38,7 @@
       <label for="type-select">Boundary type</label>
       <select id="type-select">
         <option value="">— Choose one —</option>
+        <option value="COUNTRY">Country</option>
         <option value="LGA">LGA</option>
         <option value="SA2">SA2</option>
         <option value="SA3">SA3</option>
@@ -62,6 +63,14 @@
     // is just filling in these fields once the .pmtiles + index files exist.
     // A `null` entry renders in the dropdown but shows "coming soon".
     const BOUNDARIES = {
+      COUNTRY: {
+        singular: "Country",
+        plural: "countries",
+        pmtiles: "tiles/country_2025.pmtiles",
+        sourceLayer: "country",
+        index: "tiles/country_2025_index.json",
+        codeField: "AUS_CODE21",
+      },
       LGA: {
         singular: "Local Government Area",
         plural: "LGAs",

@@ -18,8 +18,9 @@ BUILD=scripts/build-tiles.sh
 
 # --- State/territory: dissolved from the LGA shapefile (no separate source) --
 echo "[states] dissolving LGAs -> states"
-STATE_TMP="$(mktemp -t states)"   # no extension: format is set explicitly below
-trap 'rm -f "$STATE_TMP"' EXIT
+STATE_TMP="$(mktemp -t states)"      # no extension: format is set explicitly below
+COUNTRY_TMP="$(mktemp -t country)"
+trap 'rm -f "$STATE_TMP" "$COUNTRY_TMP"' EXIT
 npx -y mapshaper data/lga_2025/LGA_2025_AUST_GDA2020.shp \
   -dissolve STE_NAME21 copy-fields=STE_CODE21 \
   -o format=geojson precision=0.000001 "$STATE_TMP" 2>&1 \
@@ -42,5 +43,29 @@ tippecanoe -o "$OUT/state_2025.pmtiles" -f -l states \
   --simplification=4 --generate-ids \
   "$STATE_TMP" >/dev/null 2>&1
 echo "[states] done -> $OUT/state_2025.pmtiles ($(ls -lh "$OUT/state_2025.pmtiles" | awk '{print $5}'))"
+
+# --- Country: all LGAs dissolved into a single Australia polygon -------------
+echo "[country] dissolving LGAs -> Australia"
+npx -y mapshaper data/lga_2025/LGA_2025_AUST_GDA2020.shp \
+  -dissolve AUS_NAME21 copy-fields=AUS_CODE21 \
+  -o format=geojson precision=0.000001 "$COUNTRY_TMP" 2>&1 \
+  | grep -viE 'EBADENGINE|deprecated|npm warn|prebuild|SWITCH|WARNING|buffer' || true
+
+node -e "
+const fs=require('fs');
+const g=JSON.parse(fs.readFileSync('$COUNTRY_TMP','utf8'));
+g.features=g.features.filter(f=>f.geometry);
+fs.writeFileSync('$COUNTRY_TMP',JSON.stringify(g));
+const bbox=f=>{let a=[180,90,-180,-90];const w=c=>{if(typeof c[0]==='number'){if(c[0]<a[0])a[0]=c[0];if(c[1]<a[1])a[1]=c[1];if(c[0]>a[2])a[2]=c[0];if(c[1]>a[3])a[3]=c[1];}else c.forEach(w)};w(f.geometry.coordinates);return a.map(n=>+n.toFixed(5));};
+const meta=g.features.map(f=>({code:f.properties.AUS_CODE21,name:f.properties.AUS_NAME21,bbox:bbox(f)}));
+fs.writeFileSync('$OUT/country_2025_index.json',JSON.stringify(meta));
+console.log('  country features:',g.features.length);
+"
+tippecanoe -o "$OUT/country_2025.pmtiles" -f -l country \
+  --minimum-zoom=0 --maximum-zoom=7 \
+  --no-feature-limit --no-tile-size-limit \
+  --simplification=4 --generate-ids \
+  "$COUNTRY_TMP" >/dev/null 2>&1
+echo "[country] done -> $OUT/country_2025.pmtiles ($(ls -lh "$OUT/country_2025.pmtiles" | awk '{print $5}'))"
 
 echo "All boundary tilesets rebuilt into $OUT/"
